@@ -1,0 +1,292 @@
+---
+kind: Template
+apiVersion: v1
+metadata:
+  annotations:
+    description: Deployment template for the Procurement Concierge web application.
+    tags: "${NAME}-${APP_GROUP}-${TAG_NAME}"
+  name: "${NAME}-${APP_GROUP}-${TAG_NAME}-deploy"
+objects:
+- kind: ConfigMap
+  apiVersion: v1
+  metadata:
+    name: "${NAME}-${APP_GROUP}-${TAG_NAME}-config"
+  data:
+    NODE_ENV: production
+    SERVER_HOST: 0.0.0.0
+    DATABASE_SERVICE_NAME: "${DATABASE_SERVICE_NAME}-${APP_GROUP}-${TAG_NAME}"
+    FILE_STORAGE_DIR: "${FILE_STORAGE_PATH}/storage"
+    CONTACT_EMAIL: replaceme@email.com
+    SCHEDULED_MAINTENANCE: '0'
+    BASIC_AUTH_PASSWORD_HASH: ''
+    BASIC_AUTH_USERNAME: ''
+    MAILER_HOST: apps.smtp.gov.bc.ca
+    MAILER_PORT: '25'
+    MAILER_ROOT_URL: https://procurementconcierge.gov.bc.ca
+    TZ: America/Vancouver
+    MONGODB_REPLICA_NAME: ${MONGODB_REPLICA_NAME}
+- kind: Secret
+  type: Opaque
+  apiVersion: v1
+  metadata:
+    name: "${NAME}-${APP_GROUP}-${TAG_NAME}-secret"
+    labels:
+      app: "${NAME}-${APP_GROUP}-${TAG_NAME}"
+      app-group: ${APP_GROUP}
+      template: "${NAME}-deploy"
+  stringData:
+    COOKIE_SECRET: ${COOKIE_SECRET}
+    TOKEN_SECRET: ${TOKEN_SECRET}
+
+- kind: DeploymentConfig
+  apiVersion: v1
+  metadata:
+    name: "${NAME}-${APP_GROUP}-${TAG_NAME}"
+    labels:
+      app: "${NAME}-${APP_GROUP}-${TAG_NAME}"
+      app-group: "${APP_GROUP}"
+      template: "${NAME}-deploy"
+  spec:
+    strategy:
+      type: Rolling
+      rollingParams:
+        updatePeriodSeconds: 1
+        intervalSeconds: 1
+        timeoutSeconds: 600
+        maxUnavailable: 25%
+        maxSurge: 25%
+    replicas: ${{REPLICAS}}
+    test: false
+    selector:
+      app: "${NAME}-${APP_GROUP}-${TAG_NAME}"
+      deploymentconfig: "${NAME}-${APP_GROUP}-${TAG_NAME}"
+    template:
+      metadata:
+        labels:
+          app: "${NAME}-${APP_GROUP}-${TAG_NAME}"
+          app-group: "${APP_GROUP}"
+          deploymentconfig: "${NAME}-${APP_GROUP}-${TAG_NAME}"
+          template: "${NAME}-${APP_GROUP}-deploy"
+      spec:
+        volumes:
+        - name: ${NAME}-${APP_GROUP}-${TAG_NAME}-data
+          persistentVolumeClaim:
+            claimName: "${NAME}-${APP_GROUP}-${TAG_NAME}-pvc"
+        containers:
+        - name: "${NAME}-${APP_GROUP}-${TAG_NAME}"
+          image: image-registry.openshift-image-registry.svc:5000/${IMAGE_NAMESPACE}/${NAME}-${APP_GROUP}-${TAG_NAME}:latest
+          ports:
+          - containerPort: 3000
+            protocol: TCP
+          env:
+          - name: MONGODB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: "${DATABASE_SERVICE_NAME}-${APP_GROUP}-${TAG_NAME}-secret"
+                key: MONGODB_PASSWORD
+          - name: TOKEN_SECRET
+            valueFrom:
+              secretKeyRef:
+                name: "${NAME}-${APP_GROUP}-${TAG_NAME}-secret"
+                key: TOKEN_SECRET
+          - name: COOKIE_SECRET
+            valueFrom:
+              secretKeyRef:
+                name: "${NAME}-${APP_GROUP}-${TAG_NAME}-secret"
+                key: COOKIE_SECRET
+          - name: MONGODB_USER
+            valueFrom:
+              configMapKeyRef:
+                name: "${DATABASE_SERVICE_NAME}-${APP_GROUP}-${TAG_NAME}-config"
+                key: MONGODB_USER
+          - name: MONGODB_DATABASE_NAME
+            valueFrom:
+              configMapKeyRef:
+                name: "${DATABASE_SERVICE_NAME}-${APP_GROUP}-${TAG_NAME}-config"
+                key: MONGODB_DATABASE_NAME
+          envFrom:
+          - configMapRef:
+              name: "${NAME}-${APP_GROUP}-${TAG_NAME}-config"
+          resources:
+            requests:
+              cpu: "${CPU_REQUEST}"
+              memory: "${MEMORY_REQUEST}"
+            limits:
+              cpu: "${CPU_LIMIT}"
+              memory: "${MEMORY_LIMIT}"
+          volumeMounts:
+          - name: "${NAME}-${APP_GROUP}-${TAG_NAME}-data"
+            mountPath: ${FILE_STORAGE_PATH}
+          livenessProbe:
+            httpGet:
+              path: "/status"
+              port: 3000
+              scheme: HTTP
+            timeoutSeconds: 10
+            periodSeconds: 30
+            successThreshold: 1
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: "/status"
+              port: 3000
+              scheme: HTTP
+            timeoutSeconds: 10
+            periodSeconds: 30
+            successThreshold: 1
+            failureThreshold: 3
+          terminationMessagePath: "/dev/termination-log"
+          terminationMessagePolicy: File
+          imagePullPolicy: Always
+        restartPolicy: Always
+        terminationGracePeriodSeconds: 30
+        dnsPolicy: ClusterFirst
+        securityContext: {}
+        schedulerName: default-scheduler
+- kind: Service
+  apiVersion: v1
+  metadata:
+    name: "${NAME}-${APP_GROUP}-${TAG_NAME}"
+    creationTimestamp:
+    labels:
+      app: "${NAME}-${APP_GROUP}-${TAG_NAME}"
+      app-group: "${APP_GROUP}"
+      template: "${NAME}-${APP_GROUP}-deploy"
+  spec:
+    ports:
+    - name: 3000-tcp
+      protocol: TCP
+      port: 3000
+      targetPort: 3000
+    selector:
+      deploymentconfig: "${NAME}-${APP_GROUP}-${TAG_NAME}"
+    type: ClusterIP
+    sessionAffinity: None
+  status:
+    loadBalancer: {}
+- kind: Route
+  apiVersion: v1
+  metadata:
+    name: "${NAME}-${APP_GROUP}-${TAG_NAME}"
+    labels:
+      app: "${NAME}-${APP_GROUP}-${TAG_NAME}"
+      app-group: "${APP_GROUP}"
+      template: "${NAME}-${APP_GROUP}-deploy"
+  spec:
+    host: "${NAME}-${APP_GROUP}-${TAG_NAME}.apps.silver.devops.gov.bc.ca"
+    to:
+      kind: Service
+      name: "${NAME}-${APP_GROUP}-${TAG_NAME}"
+      weight: 100
+    port:
+      targetPort: 3000-tcp
+    tls:
+      termination: edge
+    wildcardPolicy: None
+  status:
+    ingress:
+    - host: "${NAME}-${APP_GROUP}-${TAG_NAME}.silver.devops.gov.bc.ca"
+      routerName: router
+      conditions:
+      - type: Admitted
+        status: 'True'
+      wildcardPolicy: None
+
+- kind: PersistentVolumeClaim
+  apiVersion: v1
+  metadata:
+    name: "${NAME}-${APP_GROUP}-${TAG_NAME}-pvc"
+    labels:
+      app: "${NAME}-${APP_GROUP}-${TAG_NAME}"
+      app-group: "${APP_GROUP}"
+      template: "${NAME}-deploy"
+  spec:
+    storageClassName: "${PERSISTENT_VOLUME_CLASS}"
+    accessModes:
+    - ReadWriteMany
+    resources:
+      requests:
+        storage: "${PERSISTENT_VOLUME_SIZE}"
+
+parameters:
+- name: NAME
+  displayName: Name
+  required: true
+  value: app
+
+- name: APP_GROUP
+  displayName: App Group
+  required: true
+  value: concierge
+
+- name: IMAGE_NAMESPACE
+  displayName: Image Namespace
+  required: true
+  value: 1b91ec-tools
+
+- name: TAG_NAME
+  displayName: Environment TAG name
+  required: true
+  value: dev
+
+- name: CPU_REQUEST
+  displayName: Resources CPU Request
+  required: true
+  value: 100m
+
+- name: CPU_LIMIT
+  displayName: Resources CPU Limit
+  required: true
+  value: 250m
+
+- name: MEMORY_REQUEST
+  displayName: Resources Memory Request
+  required: true
+  value: 512Mi
+
+- name: MEMORY_LIMIT
+  displayName: Resources Memory Limit
+  required: true
+  value: 1Gi
+
+- name: REPLICAS
+  displayName: The number of replicas to run
+  required: true
+  value: "3"
+
+- name: COOKIE_SECRET
+  displayName: Cookie Secret
+  required: true
+  generate: expression
+  from: "[a-zA-Z0-9]{16}"
+
+- name: TOKEN_SECRET
+  displayName: Cookie Secret
+  required: true
+  generate: expression
+  from: "[a-zA-Z0-9]{16}"
+
+- name: DATABASE_SERVICE_NAME
+  displayName: The name of the database service this app should connect to.
+  required: true
+  value: mongodb
+
+- name: MONGODB_REPLICA_NAME
+  displayName: The MongoDB replica set name.
+  required: false
+
+- name: PERSISTENT_VOLUME_SIZE
+  displayName: Persistent Volume Size
+  description: The size of the persistent volume , e.g. 512Mi, 1Gi, 2Gi.
+  required: true
+  value: 5Gi
+
+- name: PERSISTENT_VOLUME_CLASS
+  displayName: Persistent Volume Class name
+  required: true
+  value: netapp-file-standard
+
+- name: FILE_STORAGE_PATH
+  displayName: File path for the persistent file storage mount.
+  required: true
+  value: /opt/app-root/tmp/files

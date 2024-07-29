@@ -1,0 +1,236 @@
+---
+kind: Template
+apiVersion: v1
+metadata:
+  annotations:
+    description: Deployment template for a MongoDB server with persistent storage
+      (not stateful set).
+    tags: "${NAME}-${TAG_NAME}"
+  name: "${NAME}-deploy"
+objects:
+- kind: DeploymentConfig
+  apiVersion: v1
+  metadata:
+    name: "${NAME}-${TAG_NAME}"
+    generation: 1
+    labels:
+      app: "${NAME}-${TAG_NAME}"
+      app-group: "${APP_GROUP}"
+      template: "${NAME}-deploy"
+  spec:
+    strategy:
+      type: Recreate
+      recreateParams:
+        timeoutSeconds: 600
+      resources: {}
+      activeDeadlineSeconds: 21600
+    triggers:
+    - type: ImageChange
+      imageChangeParams:
+        automatic: true
+        containerNames:
+        - "${NAME}-${TAG_NAME}"
+        from:
+          kind: ImageStreamTag
+          namespace: openshift
+          name: mongodb:3.6
+    - type: ConfigChange
+    replicas: 1
+    test: false
+    selector:
+      name: "${NAME}-${TAG_NAME}"
+    template:
+      metadata:
+        labels:
+          name: "${NAME}-${TAG_NAME}"
+      spec:
+        volumes:
+        - name: "${NAME}-data"
+          persistentVolumeClaim:
+            claimName: "${NAME}-${TAG_NAME}"
+        containers:
+        - name: "${NAME}-${TAG_NAME}"
+          image: " "
+          ports:
+          - containerPort: 27017
+            protocol: TCP
+          env:
+          - name: MONGODB_USER
+            valueFrom:
+              configMapKeyRef:
+                name: "${NAME}-${TAG_NAME}-config"
+                key: MONGODB_USER
+          - name: MONGODB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: "${NAME}-${TAG_NAME}-secret"
+                key: MONGODB_PASSWORD
+          - name: MONGODB_DATABASE
+            valueFrom:
+              configMapKeyRef:
+                name: "${NAME}-${TAG_NAME}-config"
+                key: MONGODB_DATABASE_NAME
+          - name: MONGODB_ADMIN_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: "${NAME}-${TAG_NAME}-secret"
+                key: MONGODB_ADMIN_PASSWORD
+          resources:
+            requests:
+              cpu: "${CPU_REQUESTS}"
+              memory: "${MEMORY_REQUESTS}"
+            limits:
+              cpu: "${CPU_LIMIT}"
+              memory: "${MEMORY_LIMIT}"
+          volumeMounts:
+          - name: "${NAME}-data"
+            mountPath: "/var/lib/mongodb/data"
+          livenessProbe:
+            tcpSocket:
+              port: 27017
+            initialDelaySeconds: 30
+            timeoutSeconds: 1
+            periodSeconds: 10
+            successThreshold: 1
+            failureThreshold: 3
+          terminationMessagePath: "/dev/termination-log"
+          terminationMessagePolicy: File
+          imagePullPolicy: Always
+          securityContext:
+            capabilities: {}
+            privileged: false
+        restartPolicy: Always
+        terminationGracePeriodSeconds: 30
+        dnsPolicy: ClusterFirst
+        securityContext: {}
+        schedulerName: default-scheduler
+- kind: PersistentVolumeClaim
+  apiVersion: v1
+  metadata:
+    name: "${NAME}-${TAG_NAME}"
+    labels:
+      app: "${NAME}-${TAG_NAME}"
+      app-group: "${APP_GROUP}"
+      template: "${NAME}-deploy"
+  spec:
+    storageClassName: "${PERSISTENT_VOLUME_CLASS}"
+    accessModes:
+    - ReadWriteOnce
+    resources:
+      requests:
+        storage: "${PERSISTENT_VOLUME_SIZE}"
+- kind: ConfigMap
+  apiVersion: v1
+  metadata:
+    name: "${NAME}-${TAG_NAME}-config"
+    labels:
+      app: "${NAME}-${TAG_NAME}"
+      app-group: "${APP_GROUP}"
+      template: "${NAME}-deploy"
+  data:
+    MONGODB_DATABASE_NAME: "${MONGODB_DATABASE_NAME}"
+    MONGODB_USER: "${MONGODB_USER}"
+- kind: Secret
+  apiVersion: v1
+  metadata:
+    name: "${NAME}-${TAG_NAME}-secret"
+    labels:
+      app: "${NAME}-${TAG_NAME}"
+      app-group: "${APP_GROUP}"
+      template: "${NAME}-deploy"
+  stringData:
+    MONGODB_PASSWORD: "${MONGODB_PASSWORD}"
+    MONGODB_ADMIN_PASSWORD: "${MONGODB_ADMIN_PASSWORD}"
+  type: Opaque
+- kind: Service
+  apiVersion: v1
+  metadata:
+    name: "${NAME}-${TAG_NAME}"
+    labels:
+      app: "${NAME}-${TAG_NAME}"
+      app-group: "${APP_GROUP}"
+      template: "${NAME}-deploy"
+  spec:
+    ports:
+    - name: "${NAME}-${TAG_NAME}"
+      protocol: TCP
+      port: 27017
+      targetPort: 27017
+    selector:
+      name: "${NAME}-${TAG_NAME}"
+    type: ClusterIP
+    sessionAffinity: None
+parameters:
+- name: NAME
+  displayName: Name
+  required: true
+  value: mongodb-concierge
+
+- name: APP_GROUP
+  displayName: App Group
+  required: true
+  value: concierge
+
+- name: TAG_NAME
+  displayName: Environment TAG name
+  required: true
+  value: dev
+
+- name: MEMORY_REQUESTS
+  displayName: Memory Requests
+  description: Requested amount of memory for the container.
+  required: true
+  value: 512Mi 
+
+- name: MEMORY_LIMIT
+  displayName: Memory Limit
+  description: Maximum amount of memory the container can use.
+  required: true
+  value: 512Mi
+
+- name: CPU_REQUESTS
+  displayName: CPU Requests
+  description: Requested amount of CPU cores for the container.
+  required: true
+  value: 100m
+
+- name: CPU_LIMIT
+  displayName: CPU Limit
+  description: Maximum amount of CPU cores the container can use.
+  required: true
+  value: 250m
+
+- name: PERSISTENT_VOLUME_SIZE
+  displayName: Persistent Volume Size
+  description: The size of the persistent volume , e.g. 512Mi, 1Gi, 2Gi.
+  required: true
+  value: 1Gi
+
+- name: PERSISTENT_VOLUME_CLASS
+  displayName: Persistent Volume Class name
+  required: false
+  value: netapp-block-standard
+
+- name: MONGODB_PASSWORD
+  displayName: MongoDB Connection Password
+  required: true
+  generate: expression
+  from: "[a-zA-Z0-9]{16}"
+
+- name: MONGODB_ADMIN_PASSWORD
+  displayName: MongoDB Connection Admin Password
+  required: true
+  generate: expression
+  from: "[a-zA-Z0-9]{16}"
+
+- name: MONGODB_DATABASE_NAME
+  displayName: Database Name
+  required: true
+  value: concierge
+  
+- name: MONGODB_USER
+  displayName: Database User
+  description: A valid database user used by the service.
+  required: true
+  value: concierge
+
